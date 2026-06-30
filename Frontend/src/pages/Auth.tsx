@@ -5,6 +5,8 @@ import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+
 const Auth: React.FC = () => {
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [isLogin, setIsLogin] = useState(false);
@@ -45,17 +47,17 @@ const Auth: React.FC = () => {
     setLoading(true);
     try {
       if (isForgotPassword) {
-        await axios.post('http://localhost:5000/api/auth/forgot-password', { email });
+        await axios.post(`${API_URL}/auth/forgot-password`, { email });
         setStep(2);
         setResendTimer(60);
       } else if (isLogin) {
         // Login Flow
-        const res = await axios.post('http://localhost:5000/api/auth/login', { email, password }, { withCredentials: true });
+        const res = await axios.post(`${API_URL}/auth/login`, { email, password }, { withCredentials: true });
         setUser(res.data.user);
         navigate('/dashboard');
       } else {
         // Signup Flow Step 1
-        await axios.post('http://localhost:5000/api/auth/initiate', { firstName, lastName, mobileNumber, email });
+        await axios.post(`${API_URL}/auth/initiate`, { firstName, lastName, mobileNumber, email });
         setStep(2);
         setResendTimer(60);
       }
@@ -75,7 +77,7 @@ const Auth: React.FC = () => {
     setError('');
     setLoading(true);
     try {
-      await axios.post('http://localhost:5000/api/auth/resend-otp', { email });
+      await axios.post(`${API_URL}/auth/resend-otp`, { email });
       setResendTimer(60);
     } catch (err) {
       if (axios.isAxiosError(err)) {
@@ -110,7 +112,7 @@ const Auth: React.FC = () => {
     
     setLoading(true);
     try {
-      await axios.post('http://localhost:5000/api/auth/verify', { email, otp: code });
+      await axios.post(`${API_URL}/auth/verify`, { email, otp: code });
       setOtpStatus('success');
       setTimeout(() => setStep(3), 800);
     } catch (err) {
@@ -143,7 +145,7 @@ const Auth: React.FC = () => {
     setLoading(true);
     try {
       if (isForgotPassword) {
-        await axios.post('http://localhost:5000/api/auth/reset-password', { email, otp: otp.join(''), password });
+        await axios.post(`${API_URL}/auth/reset-password`, { email, otp: otp.join(''), password });
         setIsForgotPassword(false);
         setIsLogin(true);
         setStep(1);
@@ -151,7 +153,7 @@ const Auth: React.FC = () => {
         setPassword('');
         setConfirmPassword('');
       } else {
-        const res = await axios.post('http://localhost:5000/api/auth/finalize', { email, otp: otp.join(''), password }, { withCredentials: true });
+        const res = await axios.post(`${API_URL}/auth/finalize`, { email, otp: otp.join(''), password }, { withCredentials: true });
         setUser(res.data.user);
         navigate('/dashboard');
       }

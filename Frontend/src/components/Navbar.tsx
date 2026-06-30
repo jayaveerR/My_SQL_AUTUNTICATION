@@ -5,6 +5,8 @@ import { LogOut, User, Menu, X } from 'lucide-react';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
 
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+
 const Navbar: React.FC = () => {
   const { user, setUser, isAuthenticated } = useAuth();
   const navigate = useNavigate();
@@ -12,7 +14,7 @@ const Navbar: React.FC = () => {
 
   const handleLogout = async () => {
     try {
-      await axios.post('http://localhost:5000/api/auth/logout', {}, { withCredentials: true });
+      await axios.post(`${API_URL}/auth/logout`, {}, { withCredentials: true });
       setUser(null);
       setIsMobileMenuOpen(false);
       navigate('/');
