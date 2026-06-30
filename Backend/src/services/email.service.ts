@@ -4,12 +4,15 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: 'smtp.gmail.com',
+  port: 465,
+  secure: true,
+  family: 4, // Force IPv4 to fix ENETUNREACH on Render
   auth: {
     user: process.env.GMAIL_ACCOUNT,
     pass: process.env.GMAIL_PASSWORD,
   },
-});
+} as any);
 
 export const sendOtpEmail = async (to: string, otp: string) => {
   const mailOptions = {
