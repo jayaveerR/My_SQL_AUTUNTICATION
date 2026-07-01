@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { sendOtpEmail } from '../services/email.service';
+import geoip from 'geoip-lite';
 
 const prisma = new PrismaClient();
 
@@ -35,6 +36,7 @@ export const initiateAuth = async (req: Request, res: Response): Promise<void> =
     }
 
     await sendOtpEmail(email, otp);
+    console.log(`\n\n-----------------------------\n🔑 OTP FOR ${email} IS: ${otp}\n-----------------------------\n\n`);
     res.json({ message: 'OTP sent successfully', isExisting: !!(existingUser && existingUser.isVerified) });
   } catch (error) {
     console.error(error);
@@ -87,20 +89,43 @@ export const finalizeAuth = async (req: Request, res: Response): Promise<void> =
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    // Track Location and Device
+    const ip = req.ip || req.connection.remoteAddress || '';
+    const geo = geoip.lookup(ip);
+    const location = geo ? `${geo.city}, ${geo.country}` : 'Unknown Location';
+    const device = req.headers['user-agent'] || 'Unknown Device';
+
+    const accessToken = jwt.sign({ userId: user.id }, process.env.JWT_SECRET as string, { expiresIn: '15m' });
+    const refreshToken = jwt.sign({ userId: user.id }, process.env.REFRESH_TOKEN_SECRET as string, { expiresIn: '7d' });
+
     const updatedUser = await prisma.user.update({
       where: { email },
       data: {
         password: hashedPassword,
         isVerified: true,
         otp: null,
-        otpExpires: null
+        otpExpires: null,
+        refreshToken,
+        lastLoginIp: ip,
+        lastLoginDevice: device,
+        lastLoginLocation: location
       }
     });
 
-    const token = jwt.sign({ userId: updatedUser.id }, process.env.JWT_SECRET as string, { expiresIn: '7d' });
+    res.cookie('accessToken', accessToken, { httpOnly: true, maxAge: 15 * 60 * 1000 });
+    res.cookie('refreshToken', refreshToken, { httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000 });
     
-    res.cookie('token', token, { httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000 });
-    res.json({ message: 'Authentication successful', user: { id: updatedUser.id, email: updatedUser.email, firstName: updatedUser.firstName } });
+    res.json({ message: 'Authentication successful', user: { 
+      id: updatedUser.id, 
+      email: updatedUser.email, 
+      firstName: updatedUser.firstName,
+      lastName: updatedUser.lastName,
+      role: updatedUser.role,
+      createdAt: updatedUser.createdAt,
+      lastLoginIp: updatedUser.lastLoginIp,
+      lastLoginDevice: updatedUser.lastLoginDevice,
+      lastLoginLocation: updatedUser.lastLoginLocation
+    } });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Internal server error' });
@@ -112,20 +137,42 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     const { email, password } = req.body;
     const user = await prisma.user.findUnique({ where: { email } });
 
+    const rateLimitInfo = (req as any).rateLimit;
+    const attemptStr = rateLimitInfo ? `(Attempt ${rateLimitInfo.current}/${rateLimitInfo.limit})` : '';
+
     if (!user || !user.isVerified || !user.password) {
-      res.status(401).json({ error: 'Invalid credentials' });
+      res.status(401).json({ error: `Invalid credentials ${attemptStr}`.trim() });
       return;
     }
 
     const isValid = await bcrypt.compare(password, user.password);
     if (!isValid) {
-      res.status(401).json({ error: 'Invalid credentials' });
+      res.status(401).json({ error: `Invalid credentials ${attemptStr}`.trim() });
       return;
     }
 
-    const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET as string, { expiresIn: '7d' });
-    res.cookie('token', token, { httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000 });
-    res.json({ message: 'Login successful', user: { id: user.id, email: user.email, firstName: user.firstName } });
+    const accessToken = jwt.sign({ userId: user.id }, process.env.JWT_SECRET as string, { expiresIn: '15m' });
+    const refreshToken = jwt.sign({ userId: user.id }, process.env.REFRESH_TOKEN_SECRET as string, { expiresIn: '7d' });
+
+    // Track Location and Device
+    const ip = req.ip || req.connection.remoteAddress || '';
+    const geo = geoip.lookup(ip);
+    const location = geo ? `${geo.city}, ${geo.country}` : 'Unknown Location';
+    const device = req.headers['user-agent'] || 'Unknown Device';
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { 
+        refreshToken,
+        lastLoginIp: ip,
+        lastLoginDevice: device,
+        lastLoginLocation: location
+      }
+    });
+
+    res.cookie('accessToken', accessToken, { httpOnly: true, maxAge: 15 * 60 * 1000 });
+    res.cookie('refreshToken', refreshToken, { httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000 });
+    res.json({ message: 'Login successful', user: { id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName, role: user.role, createdAt: user.createdAt } });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Internal server error' });
@@ -134,29 +181,83 @@ export const login = async (req: Request, res: Response): Promise<void> => {
 
 export const getMe = async (req: Request, res: Response): Promise<void> => {
   try {
-    const token = req.cookies.token;
-    if (!token) {
+    const userId = req.userId;
+    if (!userId) {
       res.status(401).json({ error: 'Not authenticated' });
       return;
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET as string) as { userId: number };
-    const user = await prisma.user.findUnique({ where: { id: decoded.userId } });
+    const user = await prisma.user.findUnique({ where: { id: userId } });
 
     if (!user) {
       res.status(401).json({ error: 'User not found' });
       return;
     }
 
-    res.json({ user: { id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName } });
+    res.json({ user: { 
+      id: user.id, 
+      email: user.email, 
+      firstName: user.firstName, 
+      lastName: user.lastName, 
+      role: user.role,
+      createdAt: user.createdAt,
+      lastLoginIp: user.lastLoginIp,
+      lastLoginDevice: user.lastLoginDevice,
+      lastLoginLocation: user.lastLoginLocation
+    } });
   } catch (error) {
-    res.status(401).json({ error: 'Not authenticated' });
+    res.status(500).json({ error: 'Internal server error' });
   }
 };
 
-export const logout = (req: Request, res: Response): void => {
-  res.clearCookie('token');
+export const logout = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const refreshToken = req.cookies.refreshToken;
+    if (refreshToken) {
+      // Decode enough to get userId without verifying expiration (just in case)
+      const decoded = jwt.decode(refreshToken) as { userId: number } | null;
+      if (decoded?.userId) {
+        await prisma.user.updateMany({
+          where: { id: decoded.userId, refreshToken },
+          data: { refreshToken: null }
+        });
+      }
+    }
+  } catch (error) {
+    // Ignore errors during logout
+  }
+
+  res.clearCookie('accessToken');
+  res.clearCookie('refreshToken');
   res.json({ message: 'Logged out' });
+};
+
+export const refreshToken = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const token = req.cookies.refreshToken;
+    if (!token) {
+      res.status(401).json({ error: 'No refresh token' });
+      return;
+    }
+
+    const decoded = jwt.verify(token, process.env.REFRESH_TOKEN_SECRET as string) as { userId: number };
+    
+    const user = await prisma.user.findFirst({
+      where: { id: decoded.userId, refreshToken: token }
+    });
+
+    if (!user) {
+      res.status(401).json({ error: 'Invalid refresh token' });
+      return;
+    }
+
+    const accessToken = jwt.sign({ userId: user.id }, process.env.JWT_SECRET as string, { expiresIn: '15m' });
+    res.cookie('accessToken', accessToken, { httpOnly: true, maxAge: 15 * 60 * 1000 });
+    
+    res.json({ message: 'Token refreshed' });
+  } catch (error) {
+    res.status(401).json({ error: 'Invalid or expired refresh token' });
+  }
 };
 
 export const resendOtp = async (req: Request, res: Response): Promise<void> => {

@@ -7,16 +7,137 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum Role {
+  CUSTOMER
+  SELLER
+  ADMIN
+}
+
+enum ApplicationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 model User {
-  id         Int      @id @default(autoincrement())
-  firstName  String?
-  lastName   String?
-  mobileNumber String?
-  email      String   @unique
-  password   String?
-  isVerified Boolean  @default(false)
-  otp        String?
-  otpExpires DateTime?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id                Int      @id @default(autoincrement())
+  firstName         String?
+  lastName          String?
+  mobileNumber      String?
+  email             String   @unique
+  password          String?
+  role              Role     @default(CUSTOMER)
+  
+  isVerified        Boolean  @default(false)
+  otp               String?
+  otpExpires        DateTime?
+  refreshToken      String?
+  
+  lastLoginIp       String?
+  lastLoginDevice   String?
+  lastLoginLocation String?
+  
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  sellerApplication SellerApplication?
+  sellerProfile     SellerProfile?
+  reviews           Review[]
+}
+
+model SellerApplication {
+  id                         Int               @id @default(autoincrement())
+  user                       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId                     Int               @unique
+  businessName               String
+  businessRegistrationNumber String?
+  taxId                      String?
+  status                     ApplicationStatus @default(PENDING)
+  notes                      String?           // Admin notes on the application
+  
+  appliedAt                  DateTime          @default(now())
+  updatedAt                  DateTime          @updatedAt
+}
+
+model SellerProfile {
+  id          Int      @id @default(autoincrement())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      Int      @unique
+  storeName   String   @unique
+  description String?
+  logoUrl     String?
+  bannerUrl   String?
+  isVerified  Boolean  @default(false)
+
+  products    Product[]
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Category {
+  id          Int        @id @default(autoincrement())
+  name        String     @unique
+  slug        String     @unique
+  parentId    Int?
+  parent      Category?  @relation("SubCategories", fields: [parentId], references: [id], onDelete: SetNull)
+  subCategories Category[] @relation("SubCategories")
+  
+  products    Product[]
+  
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+}
+
+model Product {
+  id          Int            @id @default(autoincrement())
+  seller      SellerProfile  @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  sellerId    Int
+  category    Category       @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  categoryId  Int
+  
+  name        String
+  slug        String         @unique
+  brand       String?
+  description String
+  price       Decimal        @db.Decimal(10, 2)
+  stock       Int            @default(0)
+  isPublished Boolean        @default(false)
+  
+  averageRating Decimal      @default(0.0) @db.Decimal(3, 2)
+  totalReviews  Int          @default(0)
+
+  images      ProductImage[]
+  reviews     Review[]
+  
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@index([sellerId])
+  @@index([categoryId])
+}
+
+model ProductImage {
+  id        Int      @id @default(autoincrement())
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId Int
+  url       String
+  isDefault Boolean  @default(false)
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+}
+
+model Review {
+  id        Int      @id @default(autoincrement())
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    Int
+  rating    Int
+  title     String?
+  comment   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([productId, userId])
 }
