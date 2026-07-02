@@ -3,6 +3,7 @@ import { Outlet } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import { MiniNavbar } from '../components/MiniNavbar';
 import { Footer } from '../components/Footer';
+import { ChatWidget } from '../components/shared/ChatWidget';
 
 export const CustomerLayout: React.FC = () => {
   return (
@@ -21,6 +22,9 @@ export const CustomerLayout: React.FC = () => {
 
         <Footer />
       </div>
+      
+      {/* AI Assistant Chatbot Widget */}
+      <ChatWidget />
     </div>
   );
 };

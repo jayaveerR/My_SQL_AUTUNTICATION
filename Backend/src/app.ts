@@ -4,6 +4,7 @@ import cookieParser from 'cookie-parser';
 import authRoutes from './routes/auth.routes';
 import productRoutes from './routes/product.routes';
 import categoryRoutes from './routes/category.routes';
+import chatRoutes from './routes/chat.routes';
 
 import { csrfProtection } from './middleware/csrf.middleware';
 
@@ -24,5 +25,6 @@ app.use(csrfProtection);
 app.use('/api/auth', authRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/categories', categoryRoutes);
+app.use('/api/chat', chatRoutes);
 
 export default app;
