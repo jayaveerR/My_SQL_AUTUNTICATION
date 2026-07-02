@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { MessageSquare, Send, Sparkles, Loader2, Minus } from 'lucide-react';
+import { MessageSquare, Send, Sparkles, Loader2, Minus, Paperclip, FileText } from 'lucide-react';
 import axios from 'axios';
 import { useAuth } from '../../context/AuthContext';
 
@@ -19,55 +19,207 @@ const SUGGESTIONS = [
 export const ChatWidget: React.FC = () => {
   const { isAuthenticated } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([
     { role: 'assistant', content: "Hi there! 👋 I'm the EcommHub AI Assistant. How can I help you today?" }
   ]);
+  const [selectedModel, setSelectedModel] = useState('openrouter/auto');
+  const [fileName, setFileName] = useState<string | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to bottom of chat
+  // Fetch chat history on load
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    
+    const fetchHistory = async () => {
+      try {
+        const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+        const res = await axios.get(`${API_URL}/chat/history`, { withCredentials: true });
+        
+        if (res.data.sessions && res.data.sessions.length > 0) {
+          const latestSession = res.data.sessions[0];
+          setSessionId(latestSession.id);
+          
+          if (latestSession.fileName) {
+            setFileName(latestSession.fileName);
+          }
+          
+          if (latestSession.messages.length > 0) {
+            // Map DB messages to frontend format
+            const history = latestSession.messages.map((m: any) => ({
+              role: m.role,
+              content: m.content
+            }));
+            
+            // Keep the greeting, append history
+            setMessages([
+              { role: 'assistant', content: "Hi there! 👋 Welcome back." },
+              ...history
+            ]);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to load chat history', error);
+      }
+    };
+    
+    fetchHistory();
+  }, [isAuthenticated]);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isTyping]);
 
-  const handleSend = async (text: string) => {
-    if (!text.trim()) return;
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
 
-    // Add user message immediately
-    const userMsg: Message = { role: 'user', content: text };
-    const newMessages = [...messages, userMsg];
-    setMessages(newMessages);
-    setInput('');
-    setIsTyping(true);
+    setIsUploading(true);
+    const formData = new FormData();
+    formData.append('file', file);
+    if (sessionId) formData.append('sessionId', sessionId);
 
     try {
       const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+      const res = await axios.post(`${API_URL}/chat/upload`, formData, {
+        withCredentials: true,
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
+      setSessionId(res.data.sessionId);
+      setFileName(res.data.fileName);
       
-      // We send the entire conversation history context to OpenRouter
-      // (Excluding the initial greeting to save tokens)
-      const payloadMessages = newMessages.slice(1).map(m => ({
-        role: m.role,
-        content: m.content
-      }));
-
-      const response = await axios.post(
-        `${API_URL}/chat`, 
-        { messages: payloadMessages },
-        { withCredentials: true }
-      );
-
-      const aiReply = response.data.reply;
-      setMessages([...newMessages, { role: 'assistant', content: aiReply.content }]);
+      setMessages(prev => [...prev, { role: 'assistant', content: `I've successfully read your file: ${res.data.fileName}. What would you like to know about it?` }]);
     } catch (error) {
-      console.error('Chat error:', error);
-      setMessages([
-        ...newMessages, 
-        { role: 'assistant', content: "I'm sorry, I'm having trouble connecting right now. Please try again later." }
-      ]);
+      console.error('Upload failed', error);
+      setMessages(prev => [...prev, { role: 'assistant', content: "Sorry, I couldn't process that file." }]);
     } finally {
-      setIsTyping(false);
+      setIsUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
+  };
+
+  const handleSend = async (text: string) => {
+    if (!text.trim()) return;
+
+    // Helper to get CSRF token from cookie
+    const getCookie = (name: string) => {
+      const value = `; ${document.cookie}`;
+      const parts = value.split(`; ${name}=`);
+      if (parts.length === 2) return parts.pop()?.split(';').shift();
+      return null;
+    };
+
+    // Add user message immediately and an empty assistant message for streaming
+    const userMsg: Message = { role: 'user', content: text };
+    const placeholderMsg: Message = { role: 'assistant', content: '' };
+    
+    setMessages((prev) => [...prev, userMsg, placeholderMsg]);
+    setInput('');
+    setIsTyping(true);
+
+    const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+    const maxRetries = 3;
+    let attempt = 0;
+    let connected = false;
+
+    while (attempt < maxRetries && !connected) {
+      try {
+        const response = await fetch(`${API_URL}/chat`, {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'X-XSRF-TOKEN': getCookie('XSRF-TOKEN') || ''
+          },
+          body: JSON.stringify({ sessionId, content: text, model: selectedModel }),
+          credentials: 'include'
+        });
+
+        if (!response.body) throw new Error('No readable stream returned');
+        connected = true;
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        
+        let isFirstChunk = true;
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          
+          buffer = lines.pop() || '';
+          
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('data: ')) continue;
+            if (trimmed === 'data: [DONE]') continue;
+            
+            try {
+              const data = JSON.parse(trimmed.slice(6));
+              
+              if (data.type === 'session' && isFirstChunk) {
+                if (!sessionId) setSessionId(data.sessionId);
+                isFirstChunk = false;
+              } else if (data.type === 'content') {
+                setMessages((prev) => {
+                  const updated = [...prev];
+                  const lastIdx = updated.length - 1;
+                  if (updated[lastIdx].role === 'assistant') {
+                    updated[lastIdx] = {
+                      ...updated[lastIdx],
+                      content: updated[lastIdx].content + data.content
+                    };
+                  }
+                  return updated;
+                });
+              }
+            } catch (e) {
+              // Ignore parsing errors for split chunks
+            }
+          }
+        }
+      } catch (error) {
+        if (!connected) {
+          // Failed to connect, retry with backoff
+          attempt++;
+          if (attempt < maxRetries) {
+            const delay = Math.pow(2, attempt - 1) * 1000; // 1s, 2s
+            await new Promise(r => setTimeout(r, delay));
+          } else {
+            console.error('Chat connection failed:', error);
+            setMessages((prev) => {
+              const updated = [...prev];
+              const lastIdx = updated.length - 1;
+              if (updated[lastIdx].role === 'assistant') {
+                updated[lastIdx] = { ...updated[lastIdx], content: "⚠️ Connection failed. Please check your network and try again." };
+              }
+              return updated;
+            });
+          }
+        } else {
+          // Connected, but stream dropped mid-way
+          console.error('Chat stream dropped:', error);
+          setMessages((prev) => {
+            const updated = [...prev];
+            const lastIdx = updated.length - 1;
+            if (updated[lastIdx].role === 'assistant') {
+              updated[lastIdx] = { ...updated[lastIdx], content: updated[lastIdx].content + "\n\n⚠️ *[Connection Lost. Response saved.]*" };
+            }
+            return updated;
+          });
+          break; // Exit loop, don't retry a partial generation natively
+        }
+      }
+    }
+    
+    setIsTyping(false);
   };
 
   if (!isAuthenticated) return null;
@@ -93,9 +245,20 @@ export const ChatWidget: React.FC = () => {
                 </div>
                 <div>
                   <h3 className="font-bold text-white text-sm">AI Assistant</h3>
-                  <div className="flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                    <span className="text-[10px] text-emerald-400 font-medium uppercase tracking-wider">Online</span>
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <select 
+                      value={selectedModel}
+                      onChange={(e) => setSelectedModel(e.target.value)}
+                      className="bg-transparent text-[9px] text-emerald-400 font-medium uppercase tracking-wider outline-none cursor-pointer appearance-none hover:text-emerald-300 transition-colors"
+                    >
+                      <option value="openrouter/auto" className="bg-neutral-900">Auto (Default)</option>
+                      <option value="openai/gpt-4o" className="bg-neutral-900 text-white">GPT-4o</option>
+                      <option value="anthropic/claude-3.5-sonnet" className="bg-neutral-900 text-white">Claude 3.5 Sonnet</option>
+                      <option value="google/gemini-1.5-pro" className="bg-neutral-900 text-white">Gemini 1.5 Pro</option>
+                      <option value="deepseek/deepseek-chat" className="bg-neutral-900 text-white">DeepSeek V3</option>
+                      <option value="meta-llama/llama-3-70b-instruct" className="bg-neutral-900 text-white">Llama 3 (70B)</option>
+                    </select>
                   </div>
                 </div>
               </div>
@@ -142,7 +305,11 @@ export const ChatWidget: React.FC = () => {
             {/* Suggestions (Only show if exactly 1 message exists) */}
             {messages.length === 1 && (
               <div className="px-4 pb-2 flex flex-wrap gap-2">
-                {SUGGESTIONS.map((s, i) => (
+                {(fileName ? [
+                  "Summarize this document",
+                  "Find key skills",
+                  "Generate interview questions"
+                ] : SUGGESTIONS).map((s, i) => (
                   <button 
                     key={i}
                     onClick={() => handleSend(s)}
@@ -154,27 +321,54 @@ export const ChatWidget: React.FC = () => {
               </div>
             )}
 
+            {/* Attachment Indicator */}
+            {fileName && (
+              <div className="px-4 pb-2">
+                <div className="inline-flex items-center gap-2 bg-[#076653]/30 border border-[#076653]/50 text-neutral-300 text-xs px-3 py-1.5 rounded-full">
+                  <FileText size={14} className="text-[#E3EF26]" />
+                  <span className="truncate max-w-[150px]">{fileName}</span>
+                </div>
+              </div>
+            )}
+
             {/* Input Area */}
             <div className="p-4 bg-neutral-900 border-t border-white/5">
               <form 
                 onSubmit={(e) => { e.preventDefault(); handleSend(input); }}
-                className="relative flex items-center"
+                className="relative flex items-center gap-2"
               >
-                <input
-                  type="text"
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  placeholder="Ask anything..."
-                  className="w-full bg-black/30 border border-white/10 rounded-full py-3 pl-4 pr-12 text-sm text-white focus:outline-none focus:border-[#E3EF26]/50 transition-colors"
-                  disabled={isTyping}
+                <input 
+                  type="file" 
+                  ref={fileInputRef} 
+                  onChange={handleFileUpload} 
+                  className="hidden" 
+                  accept=".pdf,.txt,.docx" 
                 />
                 <button
-                  type="submit"
-                  disabled={!input.trim() || isTyping}
-                  className="absolute right-2 w-8 h-8 flex items-center justify-center bg-[#E3EF26] hover:bg-[#c8d41e] disabled:bg-neutral-600 disabled:text-neutral-400 text-black rounded-full transition-colors"
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isTyping || isUploading}
+                  className="w-10 h-10 flex-shrink-0 flex items-center justify-center bg-white/5 hover:bg-white/10 text-neutral-400 rounded-full transition-colors disabled:opacity-50"
                 >
-                  <Send size={14} />
+                  {isUploading ? <Loader2 size={16} className="animate-spin text-[#E3EF26]" /> : <Paperclip size={16} />}
                 </button>
+                <div className="relative flex-1">
+                  <input
+                    type="text"
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    placeholder="Ask anything..."
+                    className="w-full bg-black/30 border border-white/10 rounded-full py-3 pl-4 pr-12 text-sm text-white focus:outline-none focus:border-[#E3EF26]/50 transition-colors"
+                    disabled={isTyping || isUploading}
+                  />
+                  <button
+                    type="submit"
+                    disabled={!input.trim() || isTyping || isUploading}
+                    className="absolute right-1.5 top-1.5 bottom-1.5 aspect-square flex items-center justify-center bg-[#E3EF26] hover:bg-[#c8d41e] disabled:bg-neutral-600 disabled:text-neutral-400 text-black rounded-full transition-colors"
+                  >
+                    <Send size={14} />
+                  </button>
+                </div>
               </form>
               <div className="text-center mt-2">
                 <span className="text-[9px] text-neutral-500 font-medium">Powered by OpenRouter AI</span>
